@@ -1,135 +1,128 @@
-# Patient Readmission Prediction — Gradient Boosting Classifier
+# Hospital Readmission Prediction — Gradient Boosting Classification
 
-This project builds a **Gradient Boosting classification model** to predict whether a patient will be readmitted to the hospital within 30 days of discharge. Using demographic characteristics, medical conditions, and hospitalization details, the model enables hospitals to identify high-risk patients before discharge and implement targeted interventions — reducing readmission rates and avoiding financial penalties.
-
-The analysis covers:
-
-- **Data Preprocessing:** Encoding categorical and binary medical condition variables, dropping irrelevant identifiers, and preparing a clean feature matrix for modeling.
-- **Model Training:** Gradient Boosting classifier trained on a 70/15/15 train/validation/test split.
-- **Hyperparameter Tuning:** GridSearchCV with 5-fold cross-validation optimizing for recall — prioritized over accuracy because false negatives (missed high-risk patients) carry serious clinical consequences.
-- **Model Evaluation:** Initial and optimized models compared using accuracy, precision, recall, F1 score, AUC-ROC, and confusion matrices.
+A binary classification model predicting whether a hospital patient will be readmitted within 30 days of discharge. Built with a Gradient Boosting Classifier on a mixed-type medical dataset, evaluated against a recall-optimized hyperparameter search, and notable for a counter-intuitive finding: across all metrics, the default model outperformed the tuned model.
 
 > **Note on Dataset Availability**
-> The dataset (`medical_clean.csv`) has been removed from this repository as it contains sensitive medical information and is proprietary. All visualizations and model outputs generated during the analysis are retained in the `output/` folder for reference and presentation purposes.
+> The dataset has been removed from this repository for data ethics reasons. All generated confusion matrices and metric outputs are retained in the `output/` folder for reference and portfolio purposes.
+
+---
+
+## Research Question
+
+**Can a patient's clinical and demographic profile predict hospital readmission within 30 days of discharge?**
 
 ---
 
 ## Why Gradient Boosting
 
-Gradient Boosting builds decision trees sequentially — each tree corrects the errors of the previous one — making it especially effective for healthcare classification where:
+Gradient Boosting builds an ensemble of shallow decision trees sequentially — each tree corrects the residual errors of the previous one. On tabular medical data with mixed feature types (continuous vitals, binary condition flags, one-hot encoded categorical fields), it consistently outperforms linear classifiers without requiring distributional assumptions.
 
-- The data contains mixed types (continuous, categorical, binary medical flags)
-- Nonlinear interactions between features (e.g., age × diabetes × hospital stay length) matter
-- Minimizing false negatives is critical — a patient incorrectly predicted as low-risk is a costly miss
+The sequential error-correction mechanism makes it particularly effective when the minority class (readmitted patients) carries the highest cost, because each iteration can concentrate on the examples previous trees misclassified.
 
 ---
 
-## Variables
+## Why Recall — Not Accuracy
 
-**Target:** `ReAdmis` (Yes / No → 1 / 0)
+In healthcare classification, metric choice is a clinical decision, not a technical preference.
 
-**Continuous predictors:** `Age`, `Income`, `VitD_levels`, `Doc_visits`, `Full_meals_eaten`, `VitD_supp`, `Initial_days`, `TotalCharge`, `Additional_charges`
+A false negative here means predicting "no readmission" when a patient will actually be readmitted. That patient leaves without follow-up care scheduled. A false positive adds an unnecessary check-in. The cost asymmetry is not ambiguous.
 
-**Categorical predictors:** `Gender`, `Marital`, `Area`, `Initial_admin`, `Complication_risk`, `Services`
+This makes **Recall** the correct optimization target:
 
-**Binary medical conditions:** `HighBlood`, `Stroke`, `Overweight`, `Arthritis`, `Diabetes`, `Hyperlipidemia`, `BackPain`, `Anxiety`, `Allergic_rhinitis`, `Reflux_esophagitis`, `Asthma`, `Soft_drink`
+- **Accuracy** is distorted by class imbalance — a model predicting "No" for every patient can score 60–70% accuracy while being completely useless.
+- **F1** balances precision and recall equally, which is inappropriate when one type of error is substantially more costly.
+- **Recall** explicitly minimizes false negatives — the metric directly aligned with the clinical objective.
 
-**Excluded:** identifiers (`CaseOrder`, `UID`, `Customer_id`), high-cardinality geographic fields, survey items (Item1–Item8)
+All hyperparameter tuning via GridSearchCV used `scoring="recall"`.
 
 ---
 
-## Analysis Summary
+## Analysis Pipeline
 
-### Preprocessing Steps
-1. Drop irrelevant identifiers and geographic columns
-2. Drop rows with missing values
-3. Encode target variable (`Yes` → 1, `No` → 0)
-4. Encode binary medical condition columns
-5. One-hot encode nominal categorical variables
-6. Convert boolean columns to integer (0/1)
-7. Save processed dataset as `data/medical_clean_processed.csv`
+1. Load raw dataset; drop administrative and geographic columns
+2. Encode the binary target (`ReAdmis`: Yes → 1, No → 0)
+3. Encode 12 binary medical condition columns (Yes → 1, No → 0)
+4. One-hot encode nominal categorical features with `drop_first=True`
+5. Three-way split: **70% train / 15% validation / 15% test**
+6. Train baseline Gradient Boosting model (default hyperparameters) → evaluate on validation set
+7. Run GridSearchCV (5-fold CV, scoring=recall) across 16 hyperparameter combinations
+8. Evaluate best model on held-out test set
 
-### Data Split
+---
 
-| Set | Size |
-|---|---|
-| Training | 70% |
-| Validation | 15% |
-| Test | 15% |
+## Feature Engineering Decisions
 
-### Initial Model Results (Validation Set)
+**Dropped columns:** `CaseOrder`, `Customer_id`, `Interaction`, `UID`, `City`, `State`, `County`, `Zip`, `Lat`, `Lng`, `Population`, `TimeZone`, `Job`
 
-| Confusion Matrix — Initial Model | Classification Report |
-|---|---|
-| ![ValidationConfusionMat](output/ValidationConfusionMat.png) | ![Initialmodelmetrics](output/Initialmodelmetrics.png) |
+These are administrative identifiers, geographic coordinates, or high-cardinality string fields. Including geographic coordinates would introduce data leakage (location is not a causal readmission predictor). The `Job` column produces hundreds of sparse dummy variables that increase noise without adding signal.
 
-### Hyperparameter Tuning
+**Binary encoding:** 12 medical condition columns mapped to 0/1 integers rather than kept as strings. This prevents the model from treating category names as ordered values while avoiding dummy variable expansion for already-binary features.
 
-GridSearchCV with 5-fold cross-validation, optimizing for **recall**.
+**`drop_first=True` on categorical encoding:** Removes one dummy variable per category group to prevent perfect multicollinearity in the feature matrix.
 
-Parameters tuned:
+---
 
-| Parameter | Values Tested | Effect |
+## Hyperparameter Grid
+
+```python
+PARAM_GRID = {
+    "n_estimators":    [100, 200],
+    "learning_rate":   [0.05, 0.1],
+    "max_depth":       [3, 5],
+    "min_samples_split": [2, 5],
+}
+```
+
+5-fold cross-validation × 16 combinations = **80 model fits**.
+
+**Best parameters found:** `learning_rate=0.1`, `max_depth=5`, `min_samples_split=2`, `n_estimators=200`
+
+---
+
+## Model Performance
+
+| Metric | Baseline (Validation Set) | Optimized (Test Set) |
 |---|---|---|
-| `n_estimators` | 100, 200 | Controls number of boosting trees |
-| `learning_rate` | 0.05, 0.1 | Controls each tree's contribution |
-| `max_depth` | 3, 5 | Controls tree complexity |
-| `min_samples_split` | 2, 5 | Controls node splitting conservatism |
-
-| Best Parameters Output |
-|---|
-| ![bestparams](output/bestparams.png) |
-
-### Final Model Results (Test Set)
-
-| Confusion Matrix — Final Model |
-|---|
-| ![TestConfusion](output/TestConfusionMat.png) | 
-
-
-### Model Comparison
-
-| Metric | Initial Model | Optimized Model |
-|---|---|---|
-| Accuracy | 0.98 | 0.97 |
-| Precision | 0.97 | 0.97 |
-| Recall | 0.97 | 0.96 |
-| F1 Score | 0.97 | 0.97 |
-| AUC-ROC | > 0.99 | > 0.99 |
+| Accuracy | 0.9847 | 0.9793 |
+| Precision | 0.9767 | 0.9745 |
+| Recall | 0.9786 | 0.9693 |
+| F1 Score | 0.9776 | 0.9719 |
+| AUC-ROC | 0.9988 | 0.9979 |
 | False Negatives | 11 | 17 |
 
-> The initial model slightly outperformed the optimized model on recall, suggesting the dataset was already well-suited for the base configuration. The increase in false negatives in the optimized model is the key clinical concern — future work should explicitly optimize for recall from the start.
+| Baseline — Validation Set | Optimized — Test Set |
+|---|---|
+| ![ValidationConfusionMat](output/ValidationConfusionMat.png) | ![TestConfusionMat](output/TestConfusionMat.png) |
+
+---
+
+## Counter-Intuitive Finding: Baseline Outperforms Tuned Model
+
+Across every metric — including Recall, the metric GridSearchCV was explicitly optimizing — the baseline model outperformed the tuned model. False negatives increased from 11 to 17.
+
+A few things to note about interpreting this comparison:
+
+- The baseline was evaluated on the **validation set**; the tuned model on the **test set**. These are different data splits, so the comparison is not perfectly controlled.
+- However, the direction of the result is meaningful: the tuned model does not demonstrably improve on the baseline even on held-out data.
+
+Why does this happen?
+
+GridSearchCV maximizes average recall across 5 training folds. The selected hyperparameters (`max_depth=5`, `n_estimators=200`) produce a more complex model. On the folds it trained on, more complex trees captured more minority-class patterns. On genuinely new data, the added complexity introduced more variance than it resolved — a classic bias-variance trade-off.
+
+The default configuration (`max_depth=3`, `n_estimators=100`) already generalizes well. The simpler model's slightly higher bias turns out to be an advantage on a dataset of this size.
+
+Reporting this result honestly is more useful than selecting the configuration that looks cleaner.
 
 ---
 
 ## How to Run
 
-### Prerequisites
-
 ```bash
 pip install -r requirements.txt
-```
-
-### Dataset Setup
-
-Place the dataset inside the `data/` folder:
-
-```
-project/
-├── data/
-│   └── medical_clean.csv       ← put it here
-├── main.py
-├── requirements.txt
-└── README.md
-```
-
-### Run
-
-```bash
 python main.py
 ```
 
-The script handles all preprocessing, training, tuning, evaluation, and visualization steps automatically. All outputs and plots are saved to the `output/` folder.
+All preprocessing, model training, evaluation metrics, and confusion matrix figures run automatically. Outputs are saved to `output/`.
 
 ---
 
@@ -137,18 +130,15 @@ The script handles all preprocessing, training, tuning, evaluation, and visualiz
 
 ```
 project/
-├── data/                            # Raw dataset (not included — see note above)
-├── output/                          # Confusion matrices, ROC curve, feature importance, processed CSV
-│   └── medical_clean_processed.csv
-├── main.py                          # Entry point — run this
+├── data/                   # Dataset (not included — data ethics)
+├── output/                 # Confusion matrices and data splits
+├── main.py                 # Entry point — full pipeline
 ├── requirements.txt
 └── README.md
 ```
 
-## Key Libraries
+---
 
-| Library | Purpose |
-|---|---|
-| `pandas` | Data loading, cleaning, encoding |
-| `scikit-learn` | Gradient Boosting, GridSearchCV, metrics, train/test split |
-| `matplotlib` / `seaborn` | Confusion matrix, ROC curve, feature importance plots |
+## Tech Stack
+
+`Python` · `pandas` · `scikit-learn` (`GradientBoostingClassifier`, `GridSearchCV`, `ConfusionMatrixDisplay`) · `Matplotlib`
